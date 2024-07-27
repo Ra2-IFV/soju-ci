@@ -123,17 +123,20 @@ type conn struct {
 	lock     sync.Mutex
 	outgoing chan<- *irc.Message
 	closed   bool
-	closedCh chan struct{}
+
+	mustClose     chan struct{}
+	mustCloseLock sync.Mutex
+	mustCloseDone bool
 }
 
 func newConn(srv *Server, ic ircConn, options *connOptions) *conn {
 	outgoing := make(chan *irc.Message, 64)
 	c := &conn{
-		conn:     ic,
-		srv:      srv,
-		outgoing: outgoing,
-		logger:   options.Logger,
-		closedCh: make(chan struct{}),
+		conn:      ic,
+		srv:       srv,
+		outgoing:  outgoing,
+		logger:    options.Logger,
+		mustClose: make(chan struct{}),
 	}
 
 	go func() {
@@ -180,6 +183,17 @@ func (c *conn) isClosed() bool {
 
 // Close closes the connection. It is safe to call from any goroutine.
 func (c *conn) Close() error {
+	c.mustCloseLock.Lock()
+	defer c.mustCloseLock.Unlock()
+
+	if c.mustCloseDone {
+		return net.ErrClosed
+	}
+	// Closing this will release any goroutines holding c.lock for writing to
+	// the (potentially full) outgoing channel.
+	close(c.mustClose)
+	c.mustCloseDone = true
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -190,7 +204,6 @@ func (c *conn) Close() error {
 	err := c.conn.Close()
 	c.closed = true
 	close(c.outgoing)
-	close(c.closedCh)
 	return err
 }
 
@@ -228,6 +241,9 @@ func (c *conn) SendMessage(ctx context.Context, msg *irc.Message) {
 		// Success
 	case <-ctx.Done():
 		c.logger.Printf("failed to send message: %v", ctx.Err())
+	case <-c.mustClose:
+		// the connection got closed, drop message and release lock
+		c.logger.Printf("failed to send message: connection closed")
 	}
 }
 
@@ -278,7 +294,7 @@ func (c *conn) NewContext(parent context.Context) (context.Context, context.Canc
 		case <-ctx.Done():
 			// The parent context has been cancelled, or the caller has called
 			// cancel()
-		case <-c.closedCh:
+		case <-c.mustClose:
 			// The connection has been closed
 		}
 	}()
