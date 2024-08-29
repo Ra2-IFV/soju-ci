@@ -1648,11 +1648,9 @@ func (dc *downstreamConn) welcome(ctx context.Context, user *user) error {
 		if firstClient {
 			net.delivered.ForEachTarget(func(target string) {
 				lastDelivered := net.delivered.LoadID(target, dc.clientName)
-				if lastDelivered == "" {
-					return
+				if lastDelivered != "" {
+					dc.sendTargetBacklog(ctx, net, target, lastDelivered)
 				}
-
-				dc.sendTargetBacklog(ctx, net, target, lastDelivered)
 
 				// Fast-forward history to last message
 				targetCM := net.casemap(target)
