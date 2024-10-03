@@ -317,10 +317,10 @@ type downstreamRegistration struct {
 
 func serverSASLMechanisms(srv *Server) []string {
 	var l []string
-	if _, ok := srv.Config().Auth.(auth.PlainAuthenticator); ok {
+	if srv.Config().Auth.Plain != nil {
 		l = append(l, "PLAIN")
 	}
-	if _, ok := srv.Config().Auth.(auth.OAuthBearerAuthenticator); ok {
+	if srv.Config().Auth.OAuthBearer != nil {
 		l = append(l, "OAUTHBEARER")
 	}
 	return l
@@ -669,8 +669,8 @@ func (dc *downstreamConn) handleMessageUnregistered(ctx context.Context, msg *ir
 			username, clientName, networkName = unmarshalUsername(credentials.plain.Username)
 			password := credentials.plain.Password
 
-			auth, ok := dc.srv.Config().Auth.(auth.PlainAuthenticator)
-			if !ok {
+			auth := dc.srv.Config().Auth.Plain
+			if auth == nil {
 				err = fmt.Errorf("SASL PLAIN not supported")
 				break
 			}
@@ -699,8 +699,8 @@ func (dc *downstreamConn) handleMessageUnregistered(ctx context.Context, msg *ir
 				impersonating = true
 			}
 		case "OAUTHBEARER":
-			auth, ok := dc.srv.Config().Auth.(auth.OAuthBearerAuthenticator)
-			if !ok {
+			auth := dc.srv.Config().Auth.OAuthBearer
+			if auth == nil {
 				err = fmt.Errorf("SASL OAUTHBEARER not supported")
 				break
 			}
@@ -1315,8 +1315,8 @@ func (dc *downstreamConn) register(ctx context.Context) error {
 			}
 		}
 
-		plainAuth, ok := dc.srv.Config().Auth.(auth.PlainAuthenticator)
-		if !ok {
+		plainAuth := dc.srv.Config().Auth.Plain
+		if plainAuth == nil {
 			return ircError{&irc.Message{
 				Command: irc.ERR_PASSWDMISMATCH,
 				Params:  []string{dc.nick, "PASS authentication disabled"},
