@@ -13,10 +13,11 @@ import (
 	"time"
 	"unicode"
 
-	"codeberg.org/emersion/soju/xirc"
 	"github.com/prometheus/client_golang/prometheus"
 	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
 	"gopkg.in/irc.v4"
+
+	"codeberg.org/emersion/soju/xirc"
 )
 
 const SqliteEnabled = true
@@ -246,6 +247,7 @@ var sqliteMigrations = []string{
 		END;
 	`,
 	"ALTER TABLE User ADD COLUMN max_networks INTEGER NOT NULL DEFAULT -1",
+	`ALTER TABLE Channel ADD COLUMN share_history TEXT`,
 }
 
 type SqliteDB struct {
@@ -729,7 +731,7 @@ func (db *SqliteDB) ListChannels(ctx context.Context, networkID int64) ([]Channe
 
 	rows, err := db.db.QueryContext(ctx, `SELECT
 			id, name, key, detached, detached_internal_msgid,
-			relay_detached, reattach_on, detach_after, detach_on
+			relay_detached, reattach_on, detach_after, detach_on, share_history
 		FROM Channel
 		WHERE network = ?`, networkID)
 	if err != nil {
@@ -742,12 +744,14 @@ func (db *SqliteDB) ListChannels(ctx context.Context, networkID int64) ([]Channe
 		var ch Channel
 		var key, detachedInternalMsgID sql.NullString
 		var detachAfter int64
-		if err := rows.Scan(&ch.ID, &ch.Name, &key, &ch.Detached, &detachedInternalMsgID, &ch.RelayDetached, &ch.ReattachOn, &detachAfter, &ch.DetachOn); err != nil {
+		var shareHistory sqliteTime
+		if err := rows.Scan(&ch.ID, &ch.Name, &key, &ch.Detached, &detachedInternalMsgID, &ch.RelayDetached, &ch.ReattachOn, &detachAfter, &ch.DetachOn, &shareHistory); err != nil {
 			return nil, err
 		}
 		ch.Key = key.String
 		ch.DetachedInternalMsgID = detachedInternalMsgID.String
 		ch.DetachAfter = time.Duration(detachAfter) * time.Second
+		ch.ShareHistory = shareHistory.Time
 		channels = append(channels, ch)
 	}
 	if err := rows.Err(); err != nil {
@@ -771,6 +775,7 @@ func (db *SqliteDB) StoreChannel(ctx context.Context, networkID int64, ch *Chann
 		sql.Named("reattach_on", ch.ReattachOn),
 		sql.Named("detach_after", int64(math.Ceil(ch.DetachAfter.Seconds()))),
 		sql.Named("detach_on", ch.DetachOn),
+		sql.Named("share_history", sqliteTime{ch.ShareHistory}),
 
 		sql.Named("id", ch.ID), // only for UPDATE
 	}
@@ -780,12 +785,12 @@ func (db *SqliteDB) StoreChannel(ctx context.Context, networkID int64, ch *Chann
 		_, err = db.db.ExecContext(ctx, `UPDATE Channel
 			SET network = :network, name = :name, key = :key, detached = :detached,
 				detached_internal_msgid = :detached_internal_msgid, relay_detached = :relay_detached,
-				reattach_on = :reattach_on, detach_after = :detach_after, detach_on = :detach_on
+				reattach_on = :reattach_on, detach_after = :detach_after, detach_on = :detach_on, share_history = :share_history
 			WHERE id = :id`, args...)
 	} else {
 		var res sql.Result
-		res, err = db.db.ExecContext(ctx, `INSERT INTO Channel(network, name, key, detached, detached_internal_msgid, relay_detached, reattach_on, detach_after, detach_on)
-			VALUES (:network, :name, :key, :detached, :detached_internal_msgid, :relay_detached, :reattach_on, :detach_after, :detach_on)`, args...)
+		res, err = db.db.ExecContext(ctx, `INSERT INTO Channel(network, name, key, detached, detached_internal_msgid, relay_detached, reattach_on, detach_after, detach_on, share_history)
+			VALUES (:network, :name, :key, :detached, :detached_internal_msgid, :relay_detached, :reattach_on, :detach_after, :detach_on, :share_history)`, args...)
 		if err != nil {
 			return err
 		}
@@ -1303,6 +1308,68 @@ func (db *SqliteDB) ListMessages(ctx context.Context, networkID int64, name stri
 	}
 
 	return l, nil
+}
+
+func (db *SqliteDB) CopySharedMessages(ctx context.Context, network *Network, channel *Channel) error {
+	ctx, cancel := context.WithTimeout(ctx, sqliteQueryTimeout)
+	defer cancel()
+
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO MessageTarget(network, target)
+		VALUES (:network, :target)
+		ON CONFLICT DO NOTHING`,
+		sql.Named("network", network.ID),
+		sql.Named("target", channel.Name),
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO Message(target, raw, time, sender, text)
+		SELECT dt.id, m.raw, m.time, m.sender, m.text
+		FROM
+		(
+			SELECT c.share_history as share_history, n.id as network FROM Channel as c, Network as n
+			WHERE c.network = n.id AND n.addr = :addr AND c.id <> :channel AND c.name = :name AND c.share_history IS NOT NULL
+			ORDER BY c.share_history ASC
+			LIMIT 1
+		) src,
+		MessageTarget dt,
+		Message m
+		WHERE
+		dt.network = :network AND
+		dt.target = :name AND
+		m.target = (
+			SELECT id FROM "MessageTarget"
+			WHERE network = src.network AND target = :name
+			LIMIT 1
+		) AND
+		m.time > MAX(:time, src.share_history,
+			DATETIME(COALESCE((
+				SELECT time FROM "Message"
+				WHERE target = dt.id
+				ORDER BY time DESC
+				LIMIT 1
+			), 0), '+30 seconds')
+		);
+	`,
+		sql.Named("network", network.ID),
+		sql.Named("name", channel.Name),
+		sql.Named("addr", network.Addr),
+		sql.Named("channel", channel.ID),
+		sql.Named("time", sqliteTime{time.Now().Add(-7 * 24 * time.Hour)}),
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 var ftsQueryTokenEscaper = strings.NewReplacer(`"`, `""`)

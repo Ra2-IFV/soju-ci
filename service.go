@@ -322,12 +322,12 @@ func init() {
 					handle: handleServiceChannelStatus,
 				},
 				"create": {
-					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>]",
+					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>] [-share-history <true|false>]",
 					desc:   "create a channel",
 					handle: handleServiceChannelCreate,
 				},
 				"update": {
-					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>]",
+					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>] [-share-history <true|false>]",
 					desc:   "update a channel",
 					handle: handleServiceChannelUpdate,
 				},
@@ -1372,7 +1372,7 @@ func parseFilter(filter string) (database.MessageFilter, error) {
 
 type channelFlagSet struct {
 	*flag.FlagSet
-	Detached                                         *bool
+	Detached, ShareHistory                           *bool
 	RelayDetached, ReattachOn, DetachAfter, DetachOn *string
 }
 
@@ -1383,10 +1383,11 @@ func newChannelFlagSet() *channelFlagSet {
 	fs.Var(stringPtrFlag{&fs.ReattachOn}, "reattach-on", "")
 	fs.Var(stringPtrFlag{&fs.DetachAfter}, "detach-after", "")
 	fs.Var(stringPtrFlag{&fs.DetachOn}, "detach-on", "")
+	fs.Var(boolPtrFlag{&fs.ShareHistory}, "share-history", "")
 	return fs
 }
 
-func (fs *channelFlagSet) update(channel *database.Channel) error {
+func (fs *channelFlagSet) update(channel *database.Channel, admin bool) error {
 	if fs.RelayDetached != nil {
 		filter, err := parseFilter(*fs.RelayDetached)
 		if err != nil {
@@ -1414,6 +1415,16 @@ func (fs *channelFlagSet) update(channel *database.Channel) error {
 			return err
 		}
 		channel.DetachOn = filter
+	}
+	if fs.ShareHistory != nil {
+		if !admin {
+			return fmt.Errorf("you must be an admin to use the flag -share-history")
+		}
+		if *fs.ShareHistory && channel.ShareHistory.IsZero() {
+			channel.ShareHistory = time.Now()
+		} else if !*fs.ShareHistory {
+			channel.ShareHistory = time.Time{}
+		}
 	}
 	return nil
 }
@@ -1470,7 +1481,7 @@ func handleServiceChannelCreate(ctx *serviceContext, params []string) error {
 	ch := database.Channel{
 		Name: name,
 	}
-	if err := fs.update(&ch); err != nil {
+	if err := fs.update(&ch, ctx.admin); err != nil {
 		return err
 	}
 
@@ -1515,7 +1526,7 @@ func handleServiceChannelUpdate(ctx *serviceContext, params []string) error {
 		return fmt.Errorf("unknown channel %q", name)
 	}
 
-	if err := fs.update(ch); err != nil {
+	if err := fs.update(ch, ctx.admin); err != nil {
 		return err
 	}
 

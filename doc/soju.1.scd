@@ -458,6 +458,12 @@ character.
 		*default*
 			Currently same as *message*. This is the default behaviour.
 
+	*-share-history* true|false
+		Share history of this channel with other users of the bouncer. Available to admin users only.
+
+		When enabled, any other user on the bouncer joining this channel will have their message history pre-filled with your message history of
+		that channel. This is typically useful on public channels to enable new users to immediately get the context of the channel on join.
+
 *channel update* <name> [options...]
 	Update the options of an existing channel. The options are the same as the
 	_network create_ command.
