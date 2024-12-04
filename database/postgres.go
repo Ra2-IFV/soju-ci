@@ -442,7 +442,7 @@ func (db *PostgresDB) ListChannels(ctx context.Context, networkID int64) ([]Chan
 
 	rows, err := db.db.QueryContext(ctx, `
 		SELECT id, name, key, detached, detached_internal_msgid, relay_detached, reattach_on, detach_after,
-			detach_on
+			detach_on, share_history
 		FROM "Channel"
 		WHERE network = $1`, networkID)
 	if err != nil {
@@ -455,12 +455,14 @@ func (db *PostgresDB) ListChannels(ctx context.Context, networkID int64) ([]Chan
 		var ch Channel
 		var key, detachedInternalMsgID sql.NullString
 		var detachAfter int64
-		if err := rows.Scan(&ch.ID, &ch.Name, &key, &ch.Detached, &detachedInternalMsgID, &ch.RelayDetached, &ch.ReattachOn, &detachAfter, &ch.DetachOn); err != nil {
+		var shareHistory sql.NullTime
+		if err := rows.Scan(&ch.ID, &ch.Name, &key, &ch.Detached, &detachedInternalMsgID, &ch.RelayDetached, &ch.ReattachOn, &detachAfter, &ch.DetachOn, &shareHistory); err != nil {
 			return nil, err
 		}
 		ch.Key = key.String
 		ch.DetachedInternalMsgID = detachedInternalMsgID.String
 		ch.DetachAfter = time.Duration(detachAfter) * time.Second
+		ch.ShareHistory = shareHistory.Time
 		channels = append(channels, ch)
 	}
 	if err := rows.Err(); err != nil {
@@ -481,19 +483,19 @@ func (db *PostgresDB) StoreChannel(ctx context.Context, networkID int64, ch *Cha
 	if ch.ID == 0 {
 		err = db.db.QueryRowContext(ctx, `
 			INSERT INTO "Channel" (network, name, key, detached, detached_internal_msgid, relay_detached, reattach_on,
-				detach_after, detach_on)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				detach_after, detach_on, share_history)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			RETURNING id`,
 			networkID, ch.Name, key, ch.Detached, toNullString(ch.DetachedInternalMsgID),
-			ch.RelayDetached, ch.ReattachOn, detachAfter, ch.DetachOn).Scan(&ch.ID)
+			ch.RelayDetached, ch.ReattachOn, detachAfter, ch.DetachOn, toNullTime(ch.ShareHistory)).Scan(&ch.ID)
 	} else {
 		_, err = db.db.ExecContext(ctx, `
 			UPDATE "Channel"
 			SET name = $2, key = $3, detached = $4, detached_internal_msgid = $5,
-				relay_detached = $6, reattach_on = $7, detach_after = $8, detach_on = $9
+				relay_detached = $6, reattach_on = $7, detach_after = $8, detach_on = $9, share_history = $10
 			WHERE id = $1`,
 			ch.ID, ch.Name, key, ch.Detached, toNullString(ch.DetachedInternalMsgID),
-			ch.RelayDetached, ch.ReattachOn, detachAfter, ch.DetachOn)
+			ch.RelayDetached, ch.ReattachOn, detachAfter, ch.DetachOn, toNullTime(ch.ShareHistory))
 	}
 	return err
 }
@@ -1312,6 +1314,176 @@ func (db *PostgresDB) ListMessages(ctx context.Context, networkID int64, name st
 	}
 
 	return l, nil
+}
+
+func (db *PostgresDB) CopySharedMessages(ctx context.Context, network *Network, channel *Channel) error {
+	ctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
+	defer cancel()
+
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO "MessageTarget" (network, target)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING`,
+		network.ID, channel.Name,
+	)
+	if err != nil {
+		return err
+	}
+
+	// First, try to extend our last range, if any, to the end of the matching share ranged.
+	// This enables us, in the best-case, to create no additional message range when parting and joining a shared channel again.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE "MessageRange" AS mr
+		SET
+		"end" = mrsrc.end,
+		start_time = mstarttime.time,
+		end_time = mendtime.time,
+		has_text = COALESCE(mtext.has_text, FALSE)
+		FROM
+		(
+			SELECT id FROM "MessageTarget"
+			WHERE network = $1 AND target = $2
+			LIMIT 1
+		) AS mtdst
+		JOIN LATERAL (
+			SELECT id FROM "MessageScope"
+			WHERE addr = $3 AND target = $4 AND network IS NULL
+			LIMIT 1
+		) AS ms ON TRUE
+		JOIN LATERAL (
+			SELECT id, start, "end" FROM "MessageRange"
+			WHERE target = mtdst.id AND scope = ms.id
+			ORDER BY "end" DESC
+			LIMIT 1
+		) AS mrdst ON TRUE
+		JOIN LATERAL (
+			SELECT c.share_history AS share_history, mt.id AS id FROM "Channel" AS c, "Network" AS n, "MessageTarget" AS mt
+			WHERE c.network = n.id AND n.addr = $5 AND c.id <> $6 AND c.name = $7 AND c.share_history IS NOT NULL AND mt.network = n.id AND mt.target = c.name
+			ORDER BY c.share_history ASC
+			LIMIT 1
+		) AS mtsrc ON TRUE
+		JOIN LATERAL (
+			SELECT "end" FROM "MessageRange"
+			WHERE target = mtsrc.id AND scope = ms.id AND start <= mrdst.end AND "end" > mrdst.end AND end_time >= mtsrc.share_history
+			ORDER BY "end" DESC
+			LIMIT 1
+		) AS mrsrc ON TRUE
+		JOIN LATERAL (
+			SELECT time FROM "Message"
+			WHERE scope = ms.id AND id >= mrdst.start AND id <= mrsrc.end
+			ORDER BY time ASC
+			LIMIT 1
+		) AS mstarttime ON TRUE
+		JOIN LATERAL (
+			SELECT time FROM "Message"
+			WHERE scope = ms.id AND id >= mrdst.start AND id <= mrsrc.end
+			ORDER BY time DESC
+			LIMIT 1
+		) AS mendtime ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT TRUE AS has_text FROM "Message"
+			WHERE scope = ms.id AND id >= mrdst.start AND id <= mrsrc.end AND text IS NOT NULL
+			LIMIT 1
+		) AS mtext ON TRUE
+		WHERE mr.id = mrdst.id
+		`, network.ID, channel.Name, network.Addr, channel.Name, network.Addr, channel.ID, channel.Name)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	dirty := err != nil || n != 0
+
+	// Then, insert remaining ranges that are discontinuous from our last range.
+	// The first range might be shared only partially, so we have to slice its start against the -share-history timestamp.
+	res, err = tx.ExecContext(ctx, `
+		INSERT INTO "MessageRange" (target, scope, start, "end", start_time, end_time, has_text)
+		SELECT mtdst.id, ms.id, mstart.id, mrsrc.end, mstarttime.time, mendtime.time, COALESCE(mtext.has_text, FALSE)
+		FROM
+		(
+			SELECT id FROM "MessageTarget"
+			WHERE network = $1 AND target = $2
+			LIMIT 1
+		) AS mtdst
+		JOIN LATERAL (
+			SELECT id FROM "MessageScope"
+			WHERE addr = $3 AND target = $4 AND network IS NULL
+			LIMIT 1
+		) AS ms ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT "end" FROM "MessageRange"
+			WHERE target = mtdst.id AND scope = ms.id
+			ORDER BY "end" DESC
+			LIMIT 1
+		) AS mrdst ON TRUE
+		JOIN LATERAL (
+			SELECT c.share_history AS share_history, mt.id AS id FROM "Channel" AS c, "Network" AS n, "MessageTarget" AS mt
+			WHERE c.network = n.id AND n.addr = $5 AND c.id <> $6 AND c.name = $7 AND c.share_history IS NOT NULL AND mt.network = n.id AND mt.target = c.name
+			ORDER BY c.share_history ASC
+			LIMIT 1
+		) AS mtsrc ON TRUE
+		JOIN LATERAL (
+			SELECT start, "end" FROM "MessageRange"
+			WHERE target = mtsrc.id AND scope = ms.id AND "end" > COALESCE(mrdst.end, 0) AND end_time >= mtsrc.share_history
+			ORDER BY "end" DESC
+		) AS mrsrc ON TRUE
+		JOIN LATERAL (
+			SELECT id FROM "Message"
+			WHERE scope = ms.id AND id >= mrsrc.start AND id <= mrsrc.end AND id > COALESCE(mrdst.end, 0) AND time >= mtsrc.share_history
+			ORDER BY id ASC
+			LIMIT 1
+		) AS mstart ON TRUE
+		JOIN LATERAL (
+			SELECT time FROM "Message"
+			WHERE scope = ms.id AND id >= mstart.id AND id <= mrsrc.end
+			ORDER BY time ASC
+			LIMIT 1
+		) AS mstarttime ON TRUE
+		JOIN LATERAL (
+			SELECT time FROM "Message"
+			WHERE scope = ms.id AND id >= mstart.id AND id <= mrsrc.end
+			ORDER BY time DESC
+			LIMIT 1
+		) AS mendtime ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT TRUE AS has_text FROM "Message"
+			WHERE scope = ms.id AND id >= mstart.id AND id <= mrsrc.end AND text IS NOT NULL
+			LIMIT 1
+		) AS mtext ON TRUE
+		ORDER BY mrsrc."end"
+		`, network.ID, channel.Name, network.Addr, channel.Name, network.Addr, channel.ID, channel.Name)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	n, err = res.RowsAffected()
+	dirty = dirty || err != nil || n != 0
+	if !dirty {
+		return nil
+	}
+
+	// Our ranges were modified: clear dirty cached target data.
+	k := scopeKey{
+		addr:   network.Addr,
+		target: channel.Name,
+	}
+	db.scopesLock.Lock()
+	scope, ok := db.scopes[k]
+	db.scopesLock.Unlock()
+	if !ok {
+		return nil
+	}
+	scope.l.Lock()
+	delete(scope.targets, network.ID)
+	scope.l.Unlock()
+	return nil
 }
 
 var postgresNetworksTotalDesc = prometheus.NewDesc("soju_networks_total", "Number of networks", []string{"hostname"}, nil)

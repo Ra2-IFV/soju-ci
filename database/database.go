@@ -65,6 +65,7 @@ type Database interface {
 	StoreMessages(ctx context.Context, network *Network, name string, msgs []*irc.Message) ([]int64, error)
 	ListMessageLastPerTarget(ctx context.Context, networkID int64, options *MessageOptions) ([]MessageTargetLast, error)
 	ListMessages(ctx context.Context, networkID int64, name string, options *MessageOptions) ([]*irc.Message, error)
+	CopySharedMessages(ctx context.Context, network *Network, channel *Channel) error
 }
 
 type MetricsCollectorDatabase interface {
@@ -255,6 +256,7 @@ type Channel struct {
 	ReattachOn    MessageFilter
 	DetachAfter   time.Duration
 	DetachOn      MessageFilter
+	ShareHistory  time.Time
 }
 
 type DeliveryReceipt struct {

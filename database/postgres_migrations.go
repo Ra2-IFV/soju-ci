@@ -177,4 +177,5 @@ var postgresMigrations = []string{
 		CREATE INDEX "MessageRangeStartIndex" ON "MessageRange" (target, start_time);
 		CREATE INDEX "MessageRangeEndIndex" ON "MessageRange" (target, end_time);
 	`,
+	`ALTER TABLE "Channel" ADD COLUMN share_history TIMESTAMP WITH TIME ZONE`,
 }

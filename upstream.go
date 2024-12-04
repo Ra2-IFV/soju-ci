@@ -1214,6 +1214,12 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				})
 				uc.updateChannelAutoDetach(ch)
 
+				if c := uc.network.channels.Get(ch); c != nil {
+					if err := uc.srv.db.CopySharedMessages(ctx, &uc.network.Network, c); err != nil {
+						return err
+					}
+				}
+
 				uc.SendMessage(ctx, &irc.Message{
 					Command: "MODE",
 					Params:  []string{ch},

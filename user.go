@@ -1119,9 +1119,18 @@ func (u *user) updateNetwork(ctx context.Context, record *database.Network, enfo
 
 	// Most network changes require us to re-connect to the upstream server
 
+	now := time.Now()
 	channels := make([]database.Channel, 0, network.channels.Len())
 	network.channels.ForEach(func(_ string, ch *database.Channel) {
-		channels = append(channels, *ch)
+		c := *ch
+		if network.Addr != record.Addr && !ch.ShareHistory.IsZero() {
+			// Reset channel -share-history on network address change.
+			c.ShareHistory = now
+			if err := u.srv.db.StoreChannel(ctx, record.ID, &c); err != nil {
+				return
+			}
+		}
+		channels = append(channels, c)
 	})
 
 	updatedNetwork := newNetwork(u, record, channels)
