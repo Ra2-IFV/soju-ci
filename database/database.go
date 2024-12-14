@@ -62,7 +62,7 @@ type Database interface {
 	GetMessageLastID(ctx context.Context, networkID int64, name string) (int64, error)
 	GetMessageTarget(ctx context.Context, networkID int64, target string) (*MessageTarget, error)
 	StoreMessageTarget(ctx context.Context, networkID int64, mt *MessageTarget) error
-	StoreMessages(ctx context.Context, networkID int64, name string, msgs []*irc.Message) ([]int64, error)
+	StoreMessages(ctx context.Context, network *Network, name string, msgs []*irc.Message) ([]int64, error)
 	ListMessageLastPerTarget(ctx context.Context, networkID int64, options *MessageOptions) ([]MessageTargetLast, error)
 	ListMessages(ctx context.Context, networkID int64, name string, options *MessageOptions) ([]*irc.Message, error)
 }
@@ -307,5 +307,12 @@ func toNullTime(t time.Time) sql.NullTime {
 	return sql.NullTime{
 		Time:  t,
 		Valid: !t.IsZero(),
+	}
+}
+
+func toNullInt64(i int64) sql.NullInt64 {
+	return sql.NullInt64{
+		Int64: i,
+		Valid: i != 0,
 	}
 }

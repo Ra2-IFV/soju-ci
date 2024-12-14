@@ -109,20 +109,42 @@ CREATE TABLE "MessageTarget" (
 
 CREATE INDEX "MessageTarget_network_index" ON "MessageTarget" (network);
 
+CREATE TABLE "MessageScope" (
+	id SERIAL PRIMARY KEY,
+	addr TEXT NOT NULL,
+	target TEXT NOT NULL,
+	network INTEGER,
+	UNIQUE NULLS NOT DISTINCT(addr, target, network)
+);
+
+CREATE TABLE "MessageRange" (
+	id SERIAL PRIMARY KEY,
+	target INTEGER NOT NULL REFERENCES "MessageTarget"(id) ON DELETE CASCADE,
+	scope INTEGER NOT NULL REFERENCES "MessageScope"(id) ON DELETE CASCADE,
+	start INTEGER NOT NULL,
+	"end" INTEGER NOT NULL,
+	start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+	end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+	has_text BOOLEAN NOT NULL
+);
+CREATE INDEX "MessageRangeScopeIndex" ON "MessageRange" (target, scope);
+CREATE INDEX "MessageRangeStartIndex" ON "MessageRange" (target, start_time);
+CREATE INDEX "MessageRangeEndIndex" ON "MessageRange" (target, end_time);
+
 CREATE TEXT SEARCH DICTIONARY search_simple_dictionary (
-    TEMPLATE = pg_catalog.simple
+	TEMPLATE = pg_catalog.simple
 );
 CREATE TEXT SEARCH CONFIGURATION @SCHEMA_PREFIX@search_simple ( COPY = pg_catalog.simple );
 ALTER TEXT SEARCH CONFIGURATION @SCHEMA_PREFIX@search_simple ALTER MAPPING FOR asciiword, asciihword, hword_asciipart, hword, hword_part, word WITH @SCHEMA_PREFIX@search_simple_dictionary;
 CREATE TABLE "Message" (
 	id SERIAL PRIMARY KEY,
-	target INTEGER NOT NULL REFERENCES "MessageTarget"(id) ON DELETE CASCADE,
+	scope INTEGER NOT NULL REFERENCES "MessageScope"(id) ON DELETE CASCADE,
 	raw TEXT NOT NULL,
 	time TIMESTAMP WITH TIME ZONE NOT NULL,
 	sender TEXT NOT NULL,
 	text TEXT,
 	text_search tsvector GENERATED ALWAYS AS (to_tsvector('@SCHEMA_PREFIX@search_simple', text)) STORED
 );
-CREATE INDEX "MessageIndex" ON "Message" (target, time);
-CREATE INDEX "Message_target_index" ON "MessageTarget" (target);
+CREATE INDEX "MessageIndex" ON "Message" (scope, id);
+CREATE INDEX "MessageTimeIndex" ON "Message" (scope, time);
 CREATE INDEX "MessageSearchIndex" ON "Message" USING GIN (text_search);

@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
-	"codeberg.org/emersion/soju/database"
 	"git.sr.ht/~sircmpwn/go-bare"
 	"gopkg.in/irc.v4"
+
+	"codeberg.org/emersion/soju/database"
 )
 
 type dbMsgID struct {
@@ -81,7 +82,7 @@ func (ms *dbMessageStore) LoadLatestID(ctx context.Context, id string, options *
 }
 
 func (ms *dbMessageStore) Append(network *database.Network, entity string, msg *irc.Message) (string, error) {
-	ids, err := ms.db.StoreMessages(context.TODO(), network.ID, entity, []*irc.Message{msg})
+	ids, err := ms.db.StoreMessages(context.TODO(), network, entity, []*irc.Message{msg})
 	if err != nil {
 		return "", err
 	}

@@ -1204,6 +1204,8 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		for _, ch := range strings.Split(channels, ",") {
 			if uc.isOurNick(msg.Prefix.Name) {
 				uc.logger.Printf("joined channel %q", ch)
+				uc.username = msg.Prefix.User
+				uc.hostname = msg.Prefix.Host
 				members := xirc.NewCaseMappingMap[*xirc.MembershipSet](uc.network.casemap)
 				uc.channels.Set(ch, &upstreamChannel{
 					Name:    ch,

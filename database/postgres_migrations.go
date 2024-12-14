@@ -98,4 +98,83 @@ var postgresMigrations = []string{
 		CREATE INDEX "MessageTarget_network_index" ON "MessageTarget" (network);
 		CREATE INDEX "Message_target_index" ON "MessageTarget" (target);
 	`,
+	`
+		CREATE TABLE "MessageScope" (
+			id SERIAL PRIMARY KEY,
+			addr TEXT NOT NULL,
+			target TEXT NOT NULL,
+			network INTEGER,
+			UNIQUE NULLS NOT DISTINCT(addr, target, network)
+		);
+		INSERT INTO "MessageScope"(addr, target, network)
+		SELECT n.addr, mt.target, n.id
+		FROM "MessageTarget" mt, "Network" n
+		WHERE mt.network = n.id;
+
+		ALTER TABLE "Message" ADD COLUMN scope INTEGER REFERENCES "MessageScope"(id) ON DELETE CASCADE;
+		UPDATE "Message" m
+		SET scope = (
+			SELECT ms.id
+			FROM "MessageTarget" mt, "MessageScope" ms
+			WHERE m.target = mt.id AND mt.network = ms.network AND mt.target = ms.target
+		);
+		ALTER TABLE "Message" ALTER COLUMN scope SET NOT NULL;
+		DROP INDEX "MessageIndex";
+		CREATE INDEX "MessageIndex" ON "Message" (scope, id);
+		CREATE INDEX "MessageTimeIndex" ON "Message" (scope, time);
+
+		CREATE TABLE "MessageRange" (
+			id SERIAL PRIMARY KEY,
+			target INTEGER NOT NULL REFERENCES "MessageTarget"(id) ON DELETE CASCADE,
+			scope INTEGER NOT NULL REFERENCES "MessageScope"(id) ON DELETE CASCADE,
+			start INTEGER NOT NULL,
+			"end" INTEGER NOT NULL,
+			start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+			end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+			has_text BOOLEAN NOT NULL
+		);
+		INSERT INTO "MessageRange"(target, scope, start, "end", start_time, end_time, has_text)
+		SELECT mstart.target, ms.id, mstart.id, mend.id, mstarttime.time, mendtime.time, COALESCE(mtext.has_text, FALSE)
+		FROM "MessageScope" ms
+		JOIN LATERAL (
+			SELECT id, target
+			FROM "Message"
+			WHERE scope = ms.id
+			ORDER BY id ASC
+			LIMIT 1
+		) mstart ON true
+		JOIN LATERAL (
+			SELECT id
+			FROM "Message"
+			WHERE scope = ms.id
+			ORDER BY id DESC
+			LIMIT 1
+		) mend ON true
+		JOIN LATERAL (
+			SELECT time
+			FROM "Message"
+			WHERE scope = ms.id
+			ORDER BY time ASC
+			LIMIT 1
+		) mstarttime ON true
+		JOIN LATERAL (
+			SELECT time
+			FROM "Message"
+			WHERE scope = ms.id
+			ORDER BY time DESC
+			LIMIT 1
+		) mendtime ON true
+		LEFT JOIN LATERAL (
+			SELECT TRUE AS has_text
+			FROM "Message"
+			WHERE scope = ms.id AND text IS NOT NULL
+			LIMIT 1
+		) mtext ON true;
+
+		ALTER TABLE "Message" DROP COLUMN target;
+
+		CREATE INDEX "MessageRangeScopeIndex" ON "MessageRange" (target, scope);
+		CREATE INDEX "MessageRangeStartIndex" ON "MessageRange" (target, start_time);
+		CREATE INDEX "MessageRangeEndIndex" ON "MessageRange" (target, end_time);
+	`,
 }

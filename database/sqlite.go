@@ -943,7 +943,7 @@ func (db *SqliteDB) StoreMessageTarget(ctx context.Context, networkID int64, mt 
 	return err
 }
 
-func (db *SqliteDB) StoreMessages(ctx context.Context, networkID int64, name string, msgs []*irc.Message) ([]int64, error) {
+func (db *SqliteDB) StoreMessages(ctx context.Context, network *Network, name string, msgs []*irc.Message) ([]int64, error) {
 	if len(msgs) == 0 {
 		return nil, nil
 	}
@@ -961,7 +961,7 @@ func (db *SqliteDB) StoreMessages(ctx context.Context, networkID int64, name str
 		INSERT INTO MessageTarget(network, target)
 		VALUES (:network, :target)
 		ON CONFLICT DO NOTHING`,
-		sql.Named("network", networkID),
+		sql.Named("network", network.ID),
 		sql.Named("target", name),
 	)
 	if err != nil {
@@ -1000,7 +1000,7 @@ func (db *SqliteDB) StoreMessages(ctx context.Context, networkID int64, name str
 		}
 
 		res, err = insertStmt.ExecContext(ctx,
-			sql.Named("network", networkID),
+			sql.Named("network", network.ID),
 			sql.Named("target", name),
 			sql.Named("raw", msg.String()),
 			sql.Named("time", sqliteTime{t}),
@@ -1097,7 +1097,7 @@ func (db *SqliteDB) ListMessages(ctx context.Context, networkID int64, name stri
 	defer cancel()
 
 	query := `
-		SELECT m.raw
+		SELECT m.raw, m.time
 		FROM Message AS m, MessageTarget AS t
 		WHERE m.target = t.id AND t.network = :network AND t.target = :target `
 	if options.AfterID > 0 {
@@ -1145,13 +1145,17 @@ func (db *SqliteDB) ListMessages(ctx context.Context, networkID int64, name stri
 	var l []*irc.Message
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var t sqliteTime
+		if err := rows.Scan(&raw, &t); err != nil {
 			return nil, err
 		}
 
 		msg, err := irc.ParseMessage(raw)
 		if err != nil {
 			return nil, err
+		}
+		if _, ok := msg.Tags["time"]; !ok {
+			msg.Tags["time"] = xirc.FormatServerTime(t.Time)
 		}
 
 		l = append(l, msg)

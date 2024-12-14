@@ -103,7 +103,7 @@ func migrateNetwork(ctx context.Context, db database.Database, user *database.Us
 			if sc.Err() != nil {
 				return fmt.Errorf("unable to parse entry: %s: %v", entryPath, sc.Err())
 			}
-			_, err = db.StoreMessages(ctx, network.ID, target, msgs)
+			_, err = db.StoreMessages(ctx, network, target, msgs)
 			if err != nil {
 				return fmt.Errorf("unable to store messages: %s: %s: %v", entryPath, sc.Text(), err)
 			}

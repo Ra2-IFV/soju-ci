@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -34,6 +35,37 @@ var postgresSchema string
 type PostgresDB struct {
 	db   *sql.DB
 	temp bool
+
+	scopes     map[scopeKey]*scopeData
+	scopesLock sync.Mutex
+}
+
+type scopeKey struct {
+	addr    string
+	target  string
+	network int64 // discriminator used for private targets only
+}
+
+type scopeMessage struct {
+	id  int64
+	raw string
+	t   time.Time
+}
+
+type scopeTargetData struct {
+	id             int64
+	rangeID        int64
+	rangeEnd       int64
+	rangeStartTime time.Time
+	rangeEndTime   time.Time
+	rangeHasText   bool
+}
+
+type scopeData struct {
+	id       int64
+	messages []scopeMessage
+	targets  map[int64]*scopeTargetData // by Network.ID
+	l        sync.Mutex
 }
 
 func OpenPostgresDB(source string) (Database, error) {
@@ -46,7 +78,10 @@ func OpenPostgresDB(source string) (Database, error) {
 	// because PostgreSQL has a default of 100 max connections.
 	sqlPostgresDB.SetMaxOpenConns(25)
 
-	db := &PostgresDB{db: sqlPostgresDB}
+	db := &PostgresDB{
+		db:     sqlPostgresDB,
+		scopes: make(map[scopeKey]*scopeData),
+	}
 	if err := db.upgrade(); err != nil {
 		sqlPostgresDB.Close()
 		return nil, err
@@ -77,7 +112,11 @@ func OpenTempPostgresDB(source string) (Database, error) {
 		return nil, err
 	}
 
-	db := &PostgresDB{db: sqlPostgresDB, temp: true}
+	db := &PostgresDB{
+		db:     sqlPostgresDB,
+		temp:   true,
+		scopes: make(map[scopeKey]*scopeData),
+	}
 	if err := db.upgrade(); err != nil {
 		sqlPostgresDB.Close()
 		return nil, err
@@ -719,12 +758,14 @@ func (db *PostgresDB) GetMessageLastID(ctx context.Context, networkID int64, nam
 
 	var msgID int64
 	row := db.db.QueryRowContext(ctx, `
-		SELECT id FROM "Message"
-		WHERE target = (
+		SELECT m.id FROM "Message" m, "MessageRange" r
+		WHERE
+		r.target = (
 			SELECT id FROM "MessageTarget"
 			WHERE network = $1 AND target = $2
 		)
-		ORDER BY time DESC LIMIT 1`,
+		AND r.scope = m.scope AND m.id >= r.start AND m.id <= r."end"
+		ORDER BY m.id DESC LIMIT 1`,
 		networkID,
 		name,
 	)
@@ -775,7 +816,7 @@ func (db *PostgresDB) StoreMessageTarget(ctx context.Context, networkID int64, m
 	return err
 }
 
-func (db *PostgresDB) StoreMessages(ctx context.Context, networkID int64, name string, msgs []*irc.Message) ([]int64, error) {
+func (db *PostgresDB) StoreMessages(ctx context.Context, network *Network, name string, msgs []*irc.Message) ([]int64, error) {
 	if len(msgs) == 0 {
 		return nil, nil
 	}
@@ -789,26 +830,115 @@ func (db *PostgresDB) StoreMessages(ctx context.Context, networkID int64, name s
 	}
 	defer tx.Rollback()
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO "MessageTarget" (network, target)
-		VALUES ($1, $2)
-		ON CONFLICT DO NOTHING`,
-		networkID,
-		name,
-	)
+	k := scopeKey{
+		addr:   network.Addr,
+		target: name,
+	}
+	if !strings.HasPrefix(name, "#") {
+		// Heuristic: looks like a private message; do not share messages of this target across networks.
+		// We use the network ID as a discriminator.
+		k.network = network.ID
+	}
+	db.scopesLock.Lock()
+	scope, ok := db.scopes[k]
+	if !ok {
+		scope = &scopeData{
+			messages: make([]scopeMessage, 0, 4),
+			targets:  make(map[int64]*scopeTargetData),
+		}
+		db.scopes[k] = scope
+	}
+	db.scopesLock.Unlock()
+	scope.l.Lock()
+	defer scope.l.Unlock()
+
+	if scope.id == 0 {
+		// First message in scope since restart: try inserting.
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO "MessageScope" (addr, target, network)
+			VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING
+			RETURNING id`,
+			k.addr,
+			k.target,
+			toNullInt64(k.network),
+		).Scan(&scope.id)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		} else if err == sql.ErrNoRows {
+			// Scope already exists: get and cache ID.
+			err = tx.QueryRowContext(ctx, `
+				SELECT id FROM "MessageScope"
+				WHERE addr = $1 AND target = $2 AND network IS NOT DISTINCT FROM $3`,
+				k.addr,
+				k.target,
+				toNullInt64(k.network),
+			).Scan(&scope.id)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	target, ok := scope.targets[network.ID]
+	if !ok {
+		target = &scopeTargetData{}
+		scope.targets[network.ID] = target
+	}
+	if target.id == 0 {
+		// First message in target since restart: try inserting.
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO "MessageTarget" (network, target)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+			RETURNING id`,
+			network.ID,
+			name,
+		).Scan(&target.id)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		} else if err == sql.ErrNoRows {
+			// Target already exists: get and cache ID.
+			err = tx.QueryRowContext(ctx, `
+				SELECT id FROM "MessageTarget"
+				WHERE network = $1 AND target = $2`,
+				network.ID,
+				name,
+			).Scan(&target.id)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	insertStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO "Message" (scope, raw, time, sender, text)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`)
 	if err != nil {
 		return nil, err
 	}
 
-	insertStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO "Message" (target, raw, time, sender, text)
-		SELECT id, $1, $2, $3, $4
-		FROM "MessageTarget" as t
-		WHERE network = $5 AND target = $6
-		RETURNING id`)
+	updateRangeStmt, err := tx.PrepareContext(ctx, `
+		UPDATE "MessageRange"
+		SET "end" = $1, start_time = $2, end_time = $3, has_text = $4
+		WHERE id = $5
+	`)
 	if err != nil {
 		return nil, err
 	}
+
+	insertRangeStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO "MessageRange" (target, scope, start, "end", start_time, end_time, has_text)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id
+	`)
+	if err != nil {
+		return nil, err
+	}
+
+	var pendingRangeBumpEnd int64
 
 	ids := make([]int64, len(msgs))
 	for i, msg := range msgs {
@@ -822,6 +952,9 @@ func (db *PostgresDB) StoreMessages(ctx context.Context, networkID int64, name s
 		} else {
 			t = time.Now()
 		}
+		// Strip message time from raw (we already store it in the time column).
+		msg = msg.Copy()
+		delete(msg.Tags, "time")
 
 		var text sql.NullString
 		switch msg.Command {
@@ -831,15 +964,121 @@ func (db *PostgresDB) StoreMessages(ctx context.Context, networkID int64, name s
 				text.String = stripANSI(msg.Params[1])
 			}
 		}
+		raw := xirc.Raw(msg)
 
-		err = insertStmt.QueryRowContext(ctx,
-			msg.String(),
-			t,
-			msg.Name,
-			text,
-			networkID,
-			name,
-		).Scan(&ids[i])
+		outdatedMessages := 0
+		var prevID int64
+		var current *scopeMessage
+		const maxSkew = 5 * time.Second
+		for i, m := range scope.messages {
+			// Try to find an existing matching message in our cache.
+			if m.t.Before(t.Add(-maxSkew)) {
+				outdatedMessages++
+				continue
+			}
+			if target.rangeEnd >= m.id {
+				// Already added this message to this network: likely the same message sent multiple times; skip.
+				continue
+			}
+			if m.raw != raw {
+				continue
+			}
+			// Matching message: select.
+			if i > 0 {
+				prevID = scope.messages[i-1].id
+			}
+			current = &scope.messages[i]
+			break
+		}
+		if current == nil {
+			// Message not found in our cache: insert it.
+			if len(scope.messages) > 0 {
+				prevID = scope.messages[len(scope.messages)-1].id
+			}
+			scope.messages = append(scope.messages, scopeMessage{
+				raw: raw,
+				t:   t,
+			})
+			current = &scope.messages[len(scope.messages)-1]
+
+			err = insertStmt.QueryRowContext(ctx, scope.id, raw, t, msg.Name, text).Scan(&current.id)
+			if err != nil {
+				return nil, err
+			}
+		}
+		ids[i] = current.id
+
+		if prevID == 0 {
+			// Previous message in the scope not in cache; fetch it.
+			err = tx.QueryRowContext(ctx, `
+				SELECT m.id FROM "Message" m
+				WHERE m.scope = $1 AND m.id < $2
+				ORDER BY id DESC
+				LIMIT 1
+			`, scope.id, current.id).Scan(&prevID)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
+
+		if target.rangeEnd == 0 {
+			// Last message of target not in cache; fetch it.
+			err = tx.QueryRowContext(ctx, `
+				SELECT id, "end", start_time, end_time, has_text FROM "MessageRange"
+				WHERE target = $1
+				ORDER BY "end" DESC
+				LIMIT 1
+			`, target.id).Scan(&target.rangeID, &target.rangeEnd, &target.rangeStartTime, &target.rangeEndTime, &target.rangeHasText)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+		}
+
+		// If the last message of target is the message before the newly stored one;
+		// or if the last message is the current one (noop; can happen after joining a target with -share-history).
+		contiguousRange := target.rangeEnd != 0 && (target.rangeEnd == prevID || target.rangeEnd == current.id)
+
+		if !contiguousRange && pendingRangeBumpEnd != 0 {
+			// We previously remembered to bump the end of range. Update it before inserting a new range.
+			_, err = updateRangeStmt.ExecContext(ctx, pendingRangeBumpEnd, target.rangeStartTime, target.rangeEndTime, target.rangeHasText, target.rangeID)
+			if err != nil {
+				return nil, err
+			}
+			pendingRangeBumpEnd = 0
+		}
+
+		if !contiguousRange || target.rangeStartTime.IsZero() || current.t.Before(target.rangeStartTime) {
+			target.rangeStartTime = current.t
+		}
+		if !contiguousRange || target.rangeEndTime.IsZero() || current.t.After(target.rangeEndTime) {
+			target.rangeEndTime = current.t
+		}
+		target.rangeHasText = (contiguousRange && target.rangeHasText) || text.String != ""
+
+		if contiguousRange {
+			// Last message of target is the message before the newly stored one: remember to bump end of range.
+			// This effectively caches/"collapses" multiple UPDATEs of that range (until we have no more messages to store, or we have to insert a new range).
+			pendingRangeBumpEnd = current.id
+		} else {
+			// Last message of target is not contiguous with new message: add new range.
+			err := insertRangeStmt.QueryRowContext(ctx, target.id, scope.id, current.id, current.id, target.rangeStartTime, target.rangeEndTime, target.rangeHasText).Scan(&target.rangeID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		target.rangeEnd = current.id
+
+		const maxOutdatedMessages = 5
+		if outdatedMessages > maxOutdatedMessages {
+			// Drop some outdated messages from cache when too many are stored.
+			copy(scope.messages, scope.messages[outdatedMessages-maxOutdatedMessages:])
+			scope.messages = scope.messages[:len(scope.messages)-(outdatedMessages-maxOutdatedMessages)]
+		}
+	}
+
+	if pendingRangeBumpEnd != 0 {
+		// We previously remembered to bump the end of range. Update it now before committing the transaction.
+		_, err = updateRangeStmt.ExecContext(ctx, pendingRangeBumpEnd, target.rangeStartTime, target.rangeEndTime, target.rangeHasText, target.rangeID)
 		if err != nil {
 			return nil, err
 		}
@@ -859,18 +1098,17 @@ func (db *PostgresDB) ListMessageLastPerTarget(ctx context.Context, networkID in
 	query := `
 		SELECT t.target, l.latest
 		FROM "MessageTarget" t JOIN LATERAL (
-			SELECT m.target, m.time AS latest, m.text
-			FROM "Message" m
-			WHERE m.target = t.id
+			SELECT r.target, r.end_time AS latest
+			FROM "MessageRange" r
+			WHERE r.target = t.id
 	`
 
 	if !options.Events {
-		query += `AND m.text IS NOT NULL `
+		query += `AND r.has_text `
 	}
 
 	query += `
-
-			ORDER BY m.time DESC LIMIT 1
+			ORDER BY r.end_time DESC LIMIT 1
 		) AS l ON t.id = l.target
 		WHERE t.network = $1
 	`
@@ -927,45 +1165,112 @@ func (db *PostgresDB) ListMessages(ctx context.Context, networkID int64, name st
 	ctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
 	defer cancel()
 
+	queryMessageRange := `
+			SELECT scope, "start", "end" FROM "MessageRange"
+			WHERE target = (
+				SELECT id FROM "MessageTarget"
+				WHERE network = $1 AND target = $2
+			)
+	`
+	queryMessage := `
+			SELECT id, raw, time
+			FROM "Message"
+			WHERE r.scope = scope AND id >= r.start AND id <= r.end
+	`
+
 	parameters := []interface{}{
 		networkID,
 		name,
 	}
-	query := `
-		SELECT raw FROM "Message"
-		WHERE target = (
-			SELECT id FROM "MessageTarget"
-			WHERE network = $1 AND target = $2
-		) `
-	if options.AfterID > 0 {
-		parameters = append(parameters, options.AfterID)
-		query += fmt.Sprintf(`AND id > $%d `, len(parameters))
-	}
 	if !options.AfterTime.IsZero() {
-		// compares time strings by lexicographical order
-		parameters = append(parameters, options.AfterTime)
-		query += fmt.Sprintf(`AND time > $%d `, len(parameters))
+		var startID int64
+		err := db.db.QueryRowContext(ctx, `
+			SELECT m.id FROM "Message" m
+			WHERE m.scope = (
+				SELECT scope FROM "MessageRange"
+				WHERE target = (
+					SELECT id FROM "MessageTarget"
+					WHERE network = $1 AND target = $2
+				) AND end_time > $3
+				ORDER BY id ASC
+				LIMIT 1
+			) AND m.time > $4
+			ORDER BY time ASC
+			LIMIT 1
+		`, networkID, name, options.AfterTime, options.AfterTime).Scan(&startID)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		} else if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		parameters = append(parameters, startID)
+		queryMessageRange += fmt.Sprintf(`AND "end" >= $%d `, len(parameters))
+		queryMessage += fmt.Sprintf(`AND id >= $%d `, len(parameters))
 	}
 	if !options.BeforeTime.IsZero() {
-		// compares time strings by lexicographical order
-		parameters = append(parameters, options.BeforeTime)
-		query += fmt.Sprintf(`AND time < $%d `, len(parameters))
+		var endID int64
+		err := db.db.QueryRowContext(ctx, `
+			SELECT m.id FROM "Message" m
+			WHERE m.scope = (
+				SELECT scope FROM "MessageRange"
+				WHERE target = (
+					SELECT id FROM "MessageTarget"
+					WHERE network = $1 AND target = $2
+				) AND start_time < $3
+				ORDER BY id DESC
+				LIMIT 1
+			) AND m.time < $4
+			ORDER BY time DESC
+			LIMIT 1
+		`, networkID, name, options.BeforeTime, options.BeforeTime).Scan(&endID)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		} else if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		parameters = append(parameters, endID)
+		queryMessageRange += fmt.Sprintf(`AND start <= $%d `, len(parameters))
+		queryMessage += fmt.Sprintf(`AND id <= $%d `, len(parameters))
+	}
+	if options.AfterID > 0 {
+		parameters = append(parameters, options.AfterID)
+		queryMessage += fmt.Sprintf(`AND id > $%d `, len(parameters))
 	}
 	if options.Sender != "" {
 		parameters = append(parameters, options.Sender)
-		query += fmt.Sprintf(`AND sender = $%d `, len(parameters))
+		queryMessage += fmt.Sprintf(`AND sender = $%d `, len(parameters))
 	}
 	if options.Text != "" {
 		parameters = append(parameters, options.Text)
-		query += fmt.Sprintf(`AND text_search @@ plainto_tsquery('search_simple', $%d) `, len(parameters))
+		queryMessage += fmt.Sprintf(`AND text_search @@ plainto_tsquery('search_simple', $%d) `, len(parameters))
 	}
 	if !options.Events {
-		query += `AND text IS NOT NULL `
+		queryMessage += `AND text IS NOT NULL `
 	}
 	if options.TakeLast {
-		query += `ORDER BY time DESC `
+		queryMessage += `ORDER BY id DESC `
 	} else {
-		query += `ORDER BY time ASC `
+		queryMessage += `ORDER BY id ASC `
+	}
+	// Limit each Message sub-query to the total limit.
+	parameters = append(parameters, options.Limit)
+	queryMessage += fmt.Sprintf(`LIMIT $%d `, len(parameters))
+
+	query := fmt.Sprintf(`
+		SELECT m.raw, m.time FROM
+		(
+			%s
+		) AS r
+		JOIN LATERAL
+		(
+			%s
+		) AS m ON true
+	`, queryMessageRange, queryMessage)
+
+	if options.TakeLast {
+		query += `ORDER BY r."start" DESC, m.id DESC `
+	} else {
+		query += `ORDER BY r."start" ASC, m.id ASC `
 	}
 	parameters = append(parameters, options.Limit)
 	query += fmt.Sprintf(`LIMIT $%d`, len(parameters))
@@ -979,13 +1284,17 @@ func (db *PostgresDB) ListMessages(ctx context.Context, networkID int64, name st
 	var l []*irc.Message
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var t time.Time
+		if err := rows.Scan(&raw, &t); err != nil {
 			return nil, err
 		}
 
 		msg, err := irc.ParseMessage(raw)
 		if err != nil {
 			return nil, err
+		}
+		if _, ok := msg.Tags["time"]; !ok {
+			msg.Tags["time"] = xirc.FormatServerTime(t)
 		}
 
 		l = append(l, msg)
