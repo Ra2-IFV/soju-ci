@@ -5,9 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
+	"time"
+	"unicode/utf8"
+
+	"gopkg.in/irc.v4"
 
 	"codeberg.org/emersion/soju/database"
+	"codeberg.org/emersion/soju/xirc"
 )
 
 const usage = `usage: migrate-db <source database> <destination database>
@@ -18,6 +24,7 @@ is the string that would be in the Soju config file.
 
 Options:
 
+  -logs               Whether to migrate messages
   -help               Show this help message
 `
 
@@ -28,6 +35,7 @@ func init() {
 }
 
 func main() {
+	logs := flag.Bool("logs", false, "Whether to migrate messages")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -138,6 +146,64 @@ func main() {
 				err := destinationdb.StoreWebPushSubscription(ctx, user.ID, destNetwork.ID, &sub)
 				if err != nil {
 					log.Fatalf("unable to store web push subscription for user and network: %s %s", user.Username, srcNetwork.GetName())
+				}
+			}
+
+			if *logs {
+				targets, err := sourcedb.ListMessageLastPerTarget(ctx, srcNetwork.ID, &database.MessageOptions{
+					Limit:  1_000_000,
+					Events: true,
+				})
+				if err != nil {
+					log.Fatalf("unable to get message targets for user and network: %s %s", user.Username, srcNetwork.Name)
+				}
+				for _, target := range targets {
+					var lastTime time.Time
+					var lastMessage *irc.Message
+					for {
+						const limit = 5000
+						messages, err := sourcedb.ListMessages(ctx, srcNetwork.ID, target.Name, &database.MessageOptions{
+							AfterTime: lastTime.Add(-1 * time.Second),
+							Limit:     limit,
+							Events:    true,
+						})
+						if err != nil {
+							log.Fatalf("unable to get messages for user and network and target: %s %s %s", user.Username, srcNetwork.Name, target.Name)
+						}
+						start := len(messages)
+						for i, m := range messages {
+							if lastMessage == nil || !reflect.DeepEqual(lastMessage, m) {
+								start = i
+								break
+							}
+						}
+						lastMessage = messages[len(messages)-1]
+						lastTime, err = time.Parse(xirc.ServerTimeLayout, lastMessage.Tags["time"])
+						if err != nil {
+							log.Fatalf("unable to parse messages for user and network and target: %s %s %s", user.Username, destNetwork.Name, target.Name)
+						}
+						last := len(messages) < limit
+
+						// Skipping over any invalid UTF-8 messages (which is enforced by e.g. PostgreSQL).
+						messages = messages[start:]
+						for i := 0; i < len(messages); i++ {
+							raw := messages[i].String()
+							if utf8.ValidString(raw) {
+								continue
+							}
+							log.Printf("skipping over invalid UTF-8 in message: %s %s %s %s", user.Username, destNetwork.Name, target.Name, raw)
+							copy(messages[i:], messages[i+1:])
+							messages = messages[:len(messages)-1]
+							i--
+						}
+						_, err = destinationdb.StoreMessages(ctx, &destNetwork, target.Name, messages)
+						if err != nil {
+							log.Fatalf("unable to store messages for user and network and target: %s %s %s", user.Username, destNetwork.Name, target.Name)
+						}
+						if last {
+							break
+						}
+					}
 				}
 			}
 		}
