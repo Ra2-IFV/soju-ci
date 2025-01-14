@@ -2427,10 +2427,6 @@ func (uc *upstreamConn) getCachedWHO(mask, fields string) (l []*upstreamUser, ok
 }
 
 func (uc *upstreamConn) cacheUserInfo(nick string, info *upstreamUser) {
-	if nick == "" {
-		panic("cacheUserInfo called with empty nickname")
-	}
-
 	uu := uc.users.Get(nick)
 	if uu == nil {
 		if info.Nickname != "" {
