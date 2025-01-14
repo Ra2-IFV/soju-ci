@@ -3783,16 +3783,5 @@ func sanityCheckWebPushEndpoint(ctx context.Context, endpoint string) error {
 		return fmt.Errorf("scheme must be HTTPS")
 	}
 
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", u.Host)
-	if err != nil {
-		return fmt.Errorf("DNS lookup failed: %v", err)
-	}
-
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsMulticast() || ip.IsPrivate() {
-			return fmt.Errorf("invalid IP %v", ip)
-		}
-	}
-
 	return nil
 }
