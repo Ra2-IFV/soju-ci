@@ -48,7 +48,7 @@ var (
 
 var errWebPushSubscriptionExpired = fmt.Errorf("Web Push subscription expired")
 
-var errWebPushToInternalIP = fmt.Errorf("Cannot connect to internal IP address")
+var errWebPushToInternalIP = fmt.Errorf("cannot connect to internal IP address")
 
 var webPushHTTPClient webpush.HTTPClient = buildWebPushHTTPClient()
 
@@ -825,13 +825,13 @@ func buildWebPushHTTPClient() *http.Client {
 		},
 	}
 
-	roundTripper := &userAgentHTTPTransport{
-		userAgent: "soju",
-	}
-	roundTripper.transport.DialContext = dialer.DialContext
-
 	return &http.Client{
-		Transport: roundTripper,
+		Transport: &userAgentHTTPTransport{
+			userAgent: "soju",
+			transport: http.Transport{
+				DialContext: dialer.DialContext,
+			},
+		},
 	}
 }
 
