@@ -163,7 +163,12 @@ func handleServiceCommand(ctx *serviceContext, words []string) error {
 		return fmt.Errorf("command %q not found", words[0])
 	}
 
-	return cmd.handle(ctx, params)
+	if err := cmd.handle(ctx, params); err == flag.ErrHelp {
+		name := strings.Join(words[:len(words)-len(params)], " ")
+		return fmt.Errorf(`unsupported flag (type "help %v" for a help message)`, name)
+	} else {
+		return err
+	}
 }
 
 func (cmds serviceCommandSet) Get(params []string) (*serviceCommand, []string, error) {
@@ -322,12 +327,12 @@ func init() {
 					handle: handleServiceChannelStatus,
 				},
 				"create": {
-					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>]",
+					usage:  "<name> [-detached true|false] [-relay-detached default|none|highlight|message] [-reattach-on default|none|highlight|message] [-detach-after <duration>] [-detach-on default|none|highlight|message]",
 					desc:   "create a channel",
 					handle: handleServiceChannelCreate,
 				},
 				"update": {
-					usage:  "<name> [-detached <true|false>] [-relay-detached <default|none|highlight|message>] [-reattach-on <default|none|highlight|message>] [-detach-after <duration>] [-detach-on <default|none|highlight|message>]",
+					usage:  "<name> [-detached true|false] [-relay-detached default|none|highlight|message] [-reattach-on default|none|highlight|message] [-detach-after <duration>] [-detach-on default|none|highlight|message]",
 					desc:   "update a channel",
 					handle: handleServiceChannelUpdate,
 				},
@@ -354,7 +359,7 @@ func init() {
 					global: true,
 				},
 				"debug": {
-					usage:  "<true|false>",
+					usage:  "true|false",
 					desc:   "enable/disable debug logging to stderr (will leak sensitive information)",
 					handle: handleServiceServerDebug,
 					admin:  true,
