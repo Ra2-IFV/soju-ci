@@ -98,4 +98,5 @@ var postgresMigrations = []string{
 		CREATE INDEX "MessageTarget_network_index" ON "MessageTarget" (network);
 		CREATE INDEX "Message_target_index" ON "MessageTarget" (target);
 	`,
+	`ALTER TABLE "Network" ADD COLUMN socks5 TEXT`,
 }

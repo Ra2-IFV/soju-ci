@@ -168,12 +168,14 @@ type Network struct {
 	CertFP          string
 	SASL            SASL
 	AutoAway        bool
+	Socks5          string
 	Enabled         bool
 }
 
-func NewNetwork(addr string) *Network {
+func NewNetwork(addr string, socks5 string) *Network {
 	return &Network{
 		Addr:     addr,
+		Socks5:   socks5,
 		AutoAway: true,
 		Enabled:  true,
 	}

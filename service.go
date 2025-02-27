@@ -223,7 +223,7 @@ func init() {
 		"network": {
 			children: serviceCommandSet{
 				"create": {
-					usage:  "-addr <addr> [-name name] [-username username] [-pass pass] [-realname realname] [-certfp fingerprint] [-nick nick] [-auto-away auto-away] [-enabled enabled] [-ignore-limit ignore-limit] [-connect-command command]...",
+					usage:  "-addr <addr> [-name name] [-username username] [-pass pass] [-realname realname] [-certfp fingerprint] [-nick nick] [-auto-away auto-away] [-enabled enabled] [-ignore-limit ignore-limit] [-connect-command command] [-socks5 socks5addr]...",
 					desc:   "add a new network",
 					handle: handleServiceNetworkCreate,
 				},
@@ -232,7 +232,7 @@ func init() {
 					handle: handleServiceNetworkStatus,
 				},
 				"update": {
-					usage:  "[name] [-addr addr] [-name name] [-username username] [-pass pass] [-realname realname] [-certfp fingerprint] [-nick nick] [-auto-away auto-away] [-enabled enabled] [-ignore-limit ignore-limit] [-connect-command command]...",
+					usage:  "[name] [-addr addr] [-name name] [-username username] [-pass pass] [-realname realname] [-certfp fingerprint] [-nick nick] [-auto-away auto-away] [-enabled enabled] [-ignore-limit ignore-limit] [-connect-command command] [-socks5 socks5addr]...",
 					desc:   "update a network",
 					handle: handleServiceNetworkUpdate,
 				},
@@ -513,10 +513,10 @@ func getNetworkFromArg(ctx *serviceContext, params []string) (*network, []string
 
 type networkFlagSet struct {
 	*flag.FlagSet
-	Addr, Name, Nick, Username, Pass, Realname, CertFP *string
-	AutoAway, Enabled                                  *bool
-	IgnoreLimit                                        bool
-	ConnectCommands                                    []string
+	Addr, Name, Nick, Username, Pass, Realname, CertFP, Socks5 *string
+	AutoAway, Enabled                                          *bool
+	IgnoreLimit                                                bool
+	ConnectCommands                                            []string
 }
 
 func newNetworkFlagSet() *networkFlagSet {
@@ -532,6 +532,7 @@ func newNetworkFlagSet() *networkFlagSet {
 	fs.Var(boolPtrFlag{&fs.Enabled}, "enabled", "")
 	fs.BoolVar(&fs.IgnoreLimit, "ignore-limit", false, "")
 	fs.Var((*stringSliceFlag)(&fs.ConnectCommands), "connect-command", "")
+	fs.Var(stringPtrFlag{&fs.Socks5}, "socks5", "")
 	return fs
 }
 
@@ -583,6 +584,9 @@ func (fs *networkFlagSet) update(network *database.Network) error {
 	if fs.AutoAway != nil {
 		network.AutoAway = *fs.AutoAway
 	}
+	if fs.Socks5 != nil {
+		network.Socks5 = *fs.Socks5
+	}
 	if fs.Enabled != nil {
 		network.Enabled = *fs.Enabled
 	}
@@ -620,7 +624,12 @@ func handleServiceNetworkCreate(ctx *serviceContext, params []string) error {
 		return fmt.Errorf("you must be an admin to use the flag -ignore-limit")
 	}
 
-	record := database.NewNetwork(*fs.Addr)
+	var record *database.Network
+	if fs.Socks5 != nil {
+		record = database.NewNetwork(*fs.Addr, *fs.Socks5)
+	} else {
+		record = database.NewNetwork(*fs.Addr, "")
+	}
 	if err := fs.update(record); err != nil {
 		return err
 	}

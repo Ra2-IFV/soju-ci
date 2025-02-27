@@ -28,6 +28,7 @@ CREATE TABLE Network (
 	sasl_external_cert BLOB,
 	sasl_external_key BLOB,
 	auto_away INTEGER NOT NULL DEFAULT 1,
+	socks5 TEXT,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	FOREIGN KEY(user) REFERENCES User(id),
 	UNIQUE(user, addr, nick),

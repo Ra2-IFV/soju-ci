@@ -1442,7 +1442,7 @@ func (dc *downstreamConn) loadNetwork(ctx context.Context) error {
 			}}
 		}
 
-		record := database.NewNetwork(dc.registration.networkName)
+		record := database.NewNetwork(dc.registration.networkName, "")
 		record.Nick = nick
 
 		dc.logger.Printf("auto-saving network %q", dc.registration.networkName)
@@ -3222,7 +3222,7 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 			}
 			attrs := irc.ParseTags(attrsStr)
 
-			record := database.NewNetwork("")
+			record := database.NewNetwork("", "")
 			record.Nick = dc.nick
 			if err := updateNetworkAttrs(record, attrs, subcommand); err != nil {
 				return err

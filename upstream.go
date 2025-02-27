@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/proxy"
+
 	"github.com/emersion/go-sasl"
 	"gopkg.in/irc.v4"
 
@@ -314,7 +316,12 @@ func connectToUpstream(ctx context.Context, network *network) (*upstreamConn, er
 		}
 
 		logger.Printf("connecting to TLS server at address %q", addr)
-		netConn, err = dialTCP(ctx, network.user, addr)
+		if network.Socks5 != "" {
+			logger.Printf("using SOCKS 5proxy %q", network.Socks5)
+			netConn, err = dialTCP(ctx, network.user, addr, network.Socks5)
+		} else {
+			netConn, err = dialTCP(ctx, network.user, addr, "")
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +337,12 @@ func connectToUpstream(ctx context.Context, network *network) (*upstreamConn, er
 		}
 
 		logger.Printf("connecting to plain-text server at address %q", addr)
-		netConn, err = dialTCP(ctx, network.user, addr)
+		if network.Socks5 != "" {
+			logger.Printf("using SOCKS 5proxy %q", network.Socks5)
+			netConn, err = dialTCP(ctx, network.user, addr, network.Socks5)
+		} else {
+			netConn, err = dialTCP(ctx, network.user, addr, "")
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -373,8 +385,24 @@ func connectToUpstream(ctx context.Context, network *network) (*upstreamConn, er
 	return uc, nil
 }
 
-func dialTCP(ctx context.Context, user *user, addr string) (net.Conn, error) {
+func dialTCP(ctx context.Context, user *user, addr string, socks5 string) (net.Conn, error) {
+
+	// create a seperate dialer when using a SOCKS5 proxy
+	var SOCKSdialer interface {
+		DialContext(ctx context.Context, network, addr string) (net.Conn, error)
+	}
+	if socks5 != "" {
+		dc, err := proxy.SOCKS5("tcp", socks5, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reach socks5 proxy %q: %v", socks5, err)
+		}
+		SOCKSdialer = dc.(interface {
+			DialContext(ctx context.Context, network, addr string) (net.Conn, error)
+		})
+	}
+
 	var dialer net.Dialer
+
 	upstreamUserIPs := user.srv.Config().UpstreamUserIPs
 	if len(upstreamUserIPs) > 0 {
 		host, port, err := net.SplitHostPort(addr)
@@ -396,7 +424,12 @@ func dialTCP(ctx context.Context, user *user, addr string) (net.Conn, error) {
 		dialer.LocalAddr = localAddr
 	}
 
-	return dialer.DialContext(ctx, "tcp", addr)
+	// use the correct dialer if a proxy is enabled
+	if socks5 != "" {
+		return SOCKSdialer.DialContext(ctx, "tcp", addr)
+	} else {
+		return dialer.DialContext(ctx, "tcp", addr)
+	}
 }
 
 func (uc *upstreamConn) forEachDownstream(f func(*downstreamConn)) {

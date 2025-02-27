@@ -30,6 +30,7 @@ CREATE TABLE "Network" (
 	sasl_external_cert BYTEA,
 	sasl_external_key BYTEA,
 	auto_away BOOLEAN NOT NULL DEFAULT TRUE,
+	socks5 VARCHAR(255),
 	enabled BOOLEAN NOT NULL DEFAULT TRUE,
 	UNIQUE("user", addr, nick),
 	UNIQUE("user", name)
