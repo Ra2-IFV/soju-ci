@@ -346,4 +346,8 @@ func TestServer_chatHistory(t *testing.T) {
 	t.Run("db", func(t *testing.T) {
 		testChatHistory(t, "db", "")
 	})
+
+	t.Run("memory", func(t *testing.T) {
+		testChatHistory(t, "memory", "")
+	})
 }

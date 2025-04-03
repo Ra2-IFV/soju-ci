@@ -399,6 +399,8 @@ func newDownstreamConn(srv *Server, ic ircConn, id uint64) *downstreamConn {
 	case "fs", "db":
 		dc.caps.Available["draft/chathistory"] = ""
 		dc.caps.Available["soju.im/search"] = ""
+	case "memory":
+		dc.caps.Available["draft/chathistory"] = ""
 	}
 	return dc
 }

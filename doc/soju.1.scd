@@ -162,8 +162,7 @@ The following directives are supported:
 	  are discarded.
 	- _memory_ stores messages in memory. For each channel/user, only the
 	  latest 4K messages are kept in memory, older messages are discarded. This
-	  driver is very basic and doesn't support features such as the
-	  _chathistory_ extension and search.
+	  driver misses some features such as server-side search.
 
 	(_log_ is a deprecated alias for this directive.)
 
