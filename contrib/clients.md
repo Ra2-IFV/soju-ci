@@ -69,13 +69,19 @@ Below is an example configuration to connect to soju networks:
 ```toml
 [servers.liberachat]
 nickname = "network_nickname"
-username = "soju_username/irc.libera.chat@hostname"
+username = "soju_username/irc.libera.chat"
 password = "soju_password"
 server = "soju_server_hostname"
 port = 6697
 chathistory = true
 ```
 
+You can enable infinite scrolling history as well, if you want to be able to load older messages
+
+```toml
+[buffer.chathistory]
+infinite_scroll = true
+```
 For more details, see the [guide on connecting to soju] and [server chathistory] found in the Halloy docs.
 
 # [Hexchat]
