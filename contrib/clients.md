@@ -76,12 +76,6 @@ port = 6697
 chathistory = true
 ```
 
-You can enable infinite scrolling history as well, if you want to be able to load older messages
-
-```toml
-[buffer.chathistory]
-infinite_scroll = true
-```
 For more details, see the [guide on connecting to soju] and [server chathistory] found in the Halloy docs.
 
 # [Hexchat]
