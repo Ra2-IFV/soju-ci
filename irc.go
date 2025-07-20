@@ -282,21 +282,20 @@ func isHighlight(text, nick string) bool {
 }
 
 // parseChatHistoryBound parses the given CHATHISTORY parameter as a bound.
-// The zero time is returned on error.
-func parseChatHistoryBound(param string) time.Time {
+func parseChatHistoryBound(param string) (t time.Time, ok bool) {
 	parts := strings.SplitN(param, "=", 2)
 	if len(parts) != 2 {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	switch parts[0] {
 	case "timestamp":
 		timestamp, err := time.Parse(xirc.ServerTimeLayout, parts[1])
 		if err != nil {
-			return time.Time{}
+			return time.Time{}, false
 		}
-		return timestamp
+		return timestamp, true
 	default:
-		return time.Time{}
+		return time.Time{}, false
 	}
 }
 

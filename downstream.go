@@ -2905,10 +2905,10 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 
 		// TODO: support msgid criteria
 		var bounds [2]time.Time
-		bounds[0] = parseChatHistoryBound(boundsStr[0])
+		bounds[0], ok = parseChatHistoryBound(boundsStr[0])
 		if subcommand == "LATEST" && boundsStr[0] == "*" {
 			bounds[0] = time.Time{}
-		} else if bounds[0].IsZero() {
+		} else if !ok {
 			return ircError{&irc.Message{
 				Command: "FAIL",
 				Params:  []string{"CHATHISTORY", "INVALID_PARAMS", subcommand, boundsStr[0], "Invalid first bound"},
@@ -2916,8 +2916,8 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 		}
 
 		if boundsStr[1] != "" {
-			bounds[1] = parseChatHistoryBound(boundsStr[1])
-			if bounds[1].IsZero() {
+			bounds[1], ok = parseChatHistoryBound(boundsStr[1])
+			if !ok {
 				return ircError{&irc.Message{
 					Command: "FAIL",
 					Params:  []string{"CHATHISTORY", "INVALID_PARAMS", subcommand, boundsStr[1], "Invalid second bound"},
