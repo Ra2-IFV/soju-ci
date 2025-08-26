@@ -247,7 +247,7 @@ func TestServer_broadcast(t *testing.T) {
 	})
 }
 
-func testChatHistory(t *testing.T, msgStoreDriver, msgStorePath string) {
+func testChatHistory(t *testing.T, msgStoreDriver, msgStorePath string, baseTime time.Time) {
 	db := createTempSqliteDB(t)
 
 	user := createTestUser(t, db)
@@ -277,7 +277,6 @@ func testChatHistory(t *testing.T, msgStoreDriver, msgStorePath string) {
 		"Can I take a sip from your glass of soju?",
 	}
 
-	baseTime := time.Date(2023, 05, 23, 6, 0, 0, 0, time.UTC)
 	for i, text := range texts {
 		msgTime := baseTime.Add(time.Duration(i) * time.Second)
 		uc.WriteMessage(&irc.Message{
@@ -339,11 +338,17 @@ func testChatHistory(t *testing.T, msgStoreDriver, msgStorePath string) {
 }
 
 func TestServer_chatHistory(t *testing.T) {
+	baseTime1 := time.Date(2023, 5, 23, 6, 0, 0, 0, time.UTC)
+	baseTime2 := time.Date(2025, 8, 25, 23, 59, 59, 0, time.Local)
+
 	t.Run("fs", func(t *testing.T) {
-		testChatHistory(t, "fs", t.TempDir())
+		testChatHistory(t, "fs", t.TempDir(), baseTime1)
+	})
+	t.Run("fs2", func(t *testing.T) {
+		testChatHistory(t, "fs", t.TempDir(), baseTime2)
 	})
 
 	t.Run("db", func(t *testing.T) {
-		testChatHistory(t, "db", "")
+		testChatHistory(t, "db", "", baseTime1)
 	})
 }

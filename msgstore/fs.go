@@ -280,7 +280,7 @@ func (ms *fsMessageStore) parseMessagesBefore(ref time.Time, end time.Time, opti
 	}
 }
 
-func (ms *fsMessageStore) parseMessagesAfter(ref time.Time, end time.Time, options *LoadMessageOptions, selector func(m *irc.Message) bool) ([]*irc.Message, error) {
+func (ms *fsMessageStore) parseMessagesAfter(ref time.Time, end time.Time, enforceAfterRef bool, options *LoadMessageOptions, selector func(m *irc.Message) bool) ([]*irc.Message, error) {
 	path := ms.logPath(options.Network, options.Entity, ref)
 	f, err := os.Open(path)
 	if err != nil {
@@ -297,7 +297,7 @@ func (ms *fsMessageStore) parseMessagesAfter(ref time.Time, end time.Time, optio
 		msg, t, err := ms.parseMessage(sc.Text(), options.Network, options.Entity, ref, options.Events)
 		if err != nil {
 			return nil, err
-		} else if msg == nil || !t.After(ref) {
+		} else if msg == nil || (enforceAfterRef && !t.After(ref)) {
 			continue
 		} else if !t.Before(end) {
 			break
@@ -364,10 +364,11 @@ func (ms *fsMessageStore) getAfterTime(ctx context.Context, start time.Time, end
 	var messages []*irc.Message
 	remaining := options.Limit
 	tries := 0
+	firstLoop := true
 	for remaining > 0 && tries < fsMessageStoreMaxTries && start.Before(end) {
 		parseOptions := *options
 		parseOptions.Limit = remaining
-		buf, err := ms.parseMessagesAfter(start, end, &parseOptions, selector)
+		buf, err := ms.parseMessagesAfter(start, end, firstLoop, &parseOptions, selector)
 		if err != nil {
 			return nil, err
 		}
@@ -384,6 +385,7 @@ func (ms *fsMessageStore) getAfterTime(ctx context.Context, start time.Time, end
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		firstLoop = false
 	}
 	return messages, nil
 }
