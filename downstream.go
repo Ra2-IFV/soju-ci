@@ -64,7 +64,7 @@ func newNeedMoreParamsError(cmd string) ircError {
 func newChatHistoryError(subcommand string, target string) ircError {
 	return ircError{&irc.Message{
 		Command: "FAIL",
-		Params:  []string{"CHATHISTORY", "MESSAGE_ERROR", subcommand, target, "Messages could not be retrieved"},
+		Params:  []string{"CHATHISTORY", "MESSAGE_ERROR", subcommand, target, "Storage failure"},
 	}}
 }
 
@@ -2941,10 +2941,7 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 			targets, err := store.ListTargets(ctx, &network.Network, bounds[0], bounds[1], limit, eventPlayback)
 			if err != nil {
 				dc.logger.Printf("failed fetching targets for chathistory: %v", err)
-				return ircError{&irc.Message{
-					Command: "FAIL",
-					Params:  []string{"CHATHISTORY", "MESSAGE_ERROR", subcommand, "Failed to retrieve targets"},
-				}}
+				return newChatHistoryError("TARGETS", "*")
 			}
 
 			dc.SendBatch(ctx, "draft/chathistory-targets", nil, nil, func(batchRef string) {
