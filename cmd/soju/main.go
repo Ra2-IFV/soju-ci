@@ -131,6 +131,7 @@ func loadConfig() (*config.Server, *soju.Config, error) {
 		UpstreamUserIPs:           raw.UpstreamUserIPs,
 		DisableInactiveUsersDelay: raw.DisableInactiveUsersDelay,
 		EnableUsersOnAuth:         raw.EnableUsersOnAuth,
+		EnableWebPush:             raw.EnableWebPush,
 		MOTD:                      motd,
 		Auth:                      &authenticator,
 		FileUploader:              fileUploader,

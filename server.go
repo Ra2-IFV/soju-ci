@@ -161,6 +161,7 @@ type Config struct {
 	UpstreamUserIPs           []*net.IPNet
 	DisableInactiveUsersDelay time.Duration
 	EnableUsersOnAuth         bool
+	EnableWebPush             bool
 	Auth                      *auth.Authenticator
 	FileUploader              fileupload.Uploader
 }

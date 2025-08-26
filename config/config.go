@@ -92,6 +92,7 @@ type Server struct {
 	UpstreamUserIPs           []*net.IPNet
 	DisableInactiveUsersDelay time.Duration
 	EnableUsersOnAuth         bool
+	EnableWebPush             bool
 }
 
 func Defaults() *Server {
@@ -113,6 +114,7 @@ func Defaults() *Server {
 		}},
 		HTTPIngress:     "https://" + hostname,
 		MaxUserNetworks: -1,
+		EnableWebPush:   true,
 	}
 }
 
@@ -139,6 +141,7 @@ func Load(filename string) (*Server, error) {
 		UpstreamUserIP      []string `scfg:"upstream-user-ip"`
 		DisableInactiveUser string   `scfg:"disable-inactive-user"`
 		EnableUserOnAuth    string   `scfg:"enable-user-on-auth"`
+		EnableWebPush       string   `scfg:"enable-web-push"`
 	}
 
 	raw.MaxUserNetworks = -1
@@ -286,6 +289,13 @@ func Load(filename string) (*Server, error) {
 			return nil, fmt.Errorf("directive enable-user-on-auth: %v", err)
 		}
 		srv.EnableUsersOnAuth = b
+	}
+	if raw.EnableWebPush != "" {
+		b, err := strconv.ParseBool(raw.EnableWebPush)
+		if err != nil {
+			return nil, fmt.Errorf("directive enable-web-push: %v", err)
+		}
+		srv.EnableWebPush = b
 	}
 
 	return srv, nil

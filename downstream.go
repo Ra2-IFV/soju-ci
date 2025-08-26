@@ -238,7 +238,6 @@ var permanentDownstreamCaps = map[string]string{
 	"soju.im/bouncer-networks-notify": "",
 	"soju.im/no-implicit-names":       "",
 	"soju.im/read":                    "",
-	"soju.im/webpush":                 "",
 }
 
 // passthroughDownstreamCaps is the list of downstream capabilities that
@@ -391,6 +390,9 @@ func newDownstreamConn(srv *Server, ic ircConn, id uint64) *downstreamConn {
 	}
 	for k, v := range permanentDownstreamCaps {
 		dc.caps.Available[k] = v
+	}
+	if srv.Config().EnableWebPush {
+		dc.caps.Available["soju.im/webpush"] = ""
 	}
 	dc.caps.Available["sasl"] = strings.Join(serverSASLMechanisms(dc.srv), ",")
 	// TODO: this is racy, we should only enable chathistory after

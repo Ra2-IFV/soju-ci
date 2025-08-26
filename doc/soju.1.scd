@@ -260,6 +260,10 @@ The following directives are supported:
 	*auth pam*
 		Use PAM authentication.
 
+*enable-web-push* true|false
+	Advertise support for the _soju.im/webpush_ extension (enabled by
+	default).
+
 # IRC SERVICE
 
 soju exposes an IRC service called *BouncerServ* to manage the bouncer.
