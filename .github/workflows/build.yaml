@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '.build.yml'
+      - '.editorconfig'
+      - '.gitignore'
+      - LICENSE
+      - README.md
+  workflow_dispatch:
+    inputs:
+      cputune:
+        type: choice
+        default: znver2
+        options:
+          - znver2
+          - x86-64
+
+permissions:
+    contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: '-Ofast -pipe -fno-plt -flto=auto -fno-fat-lto-objects -ffunction-sections -fdata-sections'
+      CXXFLAGS: '-Ofast -pipe -fno-plt -flto=auto -fno-fat-lto-objects -ffunction-sections -fdata-sections'
+      LDFLAGS: '-Wl,--gc-sections -fuse-ld=mold'
+      GOFLAGS: '-ldflags=-w -ldflags=-s -trimpath'
+      APT_INSTALL_PKGS: 'mold libsqlite3-0'
+    steps:
+    - name: Clone repository
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 1
+
+    - name: Setup envirionment
+      run: |
+        sudo apt-get -yq update
+        sudo env DEBIAN_FRONTEND=noninteractive \
+          apt-get install -y ${{ env.APT_INSTALL_PKGS }}
+
+        echo CFLAGS="$CFLAGS -march=${{ inputs.cputune }} -mtune=${{ inputs.cputune }}" >> "$GITHUB_ENV"
+        echo CXXFLAGS="$CXXFLAGS -march=${{ inputs.cputune }} -mtune=${{ inputs.cputune }}" >> "$GITHUB_ENV"
+        echo REV_GOMOD_HASH=$(md5sum go.mod | cut -d ' ' -f 1) >> "$GITHUB_ENV"
+        echo GOPATH=$(go env GOPATH) >> "$GITHUB_ENV"
+
+    - name: Cache GOPATH
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.GOPATH }}
+        key: ${{ runner.os }}-${{ env.REV_GOMOD_HASH }}
+        restore-keys: ${{ runner.os }}-
+
+    - name: Build
+      run: |
+        export CGO_CFLAGS=$CFLAGS CGO_CXXFLAGS=$CFLAGS CGO_LDFLAGS=$LDFLAGS \
+          GOFLAGS="$GOFLAGS -tags=libsqlite3"
+        make soju
+
+    - name: Create archive
+      run: |
+        tar cf - soju sojuctl sojudb | zstd -18 -o soju-${{ inputs.cputune }}.tar.zst
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: soju-${{ github.sha }}-${{ inputs.cputune }}
+        compression-level: 9
+        path: |
+          soju
+          sojuctl
+          sojudb
+
+    - uses: softprops/action-gh-release@v2
+      with:
+        name: 'Nightly build'
+        tag_name: 'nightly'
+        body: |
+          LOL. try it.
+        prerelease: true
+        overwrite_files: true
+        generate_release_notes: true
+        files: soju-${{ inputs.cputune }}.tar.zst
