@@ -41,7 +41,7 @@ jobs:
       run: |
         sudo apt-get -yq update
         sudo env DEBIAN_FRONTEND=noninteractive \
-          apt-get install -y ${{ env.APT_INSTALL_PKGS }}
+          apt-get install -y $APT_INSTALL_PKGS
 
         echo CFLAGS="$CFLAGS -march=${{ inputs.cputune }} -mtune=${{ inputs.cputune }}" >> "$GITHUB_ENV"
         echo CXXFLAGS="$CXXFLAGS -march=${{ inputs.cputune }} -mtune=${{ inputs.cputune }}" >> "$GITHUB_ENV"
